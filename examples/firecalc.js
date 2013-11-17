@@ -166,9 +166,7 @@ firecalc.Operation = (function () {
       return new Operation();
     }
     
-    if (data) {
-      this.data = data;
-    }
+    this.data = data || '';
   }
 
   Operation.prototype.equals = function (other) {
@@ -176,7 +174,8 @@ firecalc.Operation = (function () {
   };
   
   Operation.prototype.compose = function(other) {
-    return new Operation(this.data+'\n'+other.data);
+    var prepend = this.data ? (this.data+'\n') : '';
+    return new Operation(prepend+other.data);
   };
   
   // Converts operation into a JSON value.
@@ -206,6 +205,7 @@ firecalc.FirebaseAdapter = (function (global) {
     this.ready_ = false;
     this.firebaseCallbacks_ = [];
     this.zombie_ = false;
+    this.document_ = new Operation();
 
     // The next expected revision.
     this.revision_ = 0;
@@ -395,8 +395,6 @@ firecalc.FirebaseAdapter = (function (global) {
 
   FirebaseAdapter.prototype.handleInitialRevisions_ = function() {
     assert(!this.ready_, "Should not be called multiple times.");
-
-    var document_ = [];
     
     // Ignore the checkpoint and compose all subsequent revisions into a single operation to apply at once.
     this.revision_ = this.checkpointRevision_ ? this.checkpointRevision_+1 : 0;
@@ -407,7 +405,7 @@ firecalc.FirebaseAdapter = (function (global) {
         // If a misbehaved client adds a bad operation, just ignore it.
         utils.log('Invalid operation.', this.ref_.toString(), revisionId, pending[revisionId]);
       } else {
-        document_.push(revision.operation);
+        this.document_ = this.document_.compose(revision.operation);
       }
 
       delete pending[revisionId];
@@ -415,7 +413,7 @@ firecalc.FirebaseAdapter = (function (global) {
       revisionId = revisionToId(this.revision_);
     }
 
-    this.trigger('operation', document_);
+    this.trigger('operation', this.document_);
 
     this.ready_ = true;
     var self = this;
@@ -436,6 +434,7 @@ firecalc.FirebaseAdapter = (function (global) {
         // If a misbehaved client adds a bad operation, just ignore it.
         utils.log('Invalid operation.', this.ref_.toString(), revisionId, pending[revisionId]);
       } else {
+        this.document_ = this.document_.compose(revision.operation);
         if (this.sent_ && revisionId === this.sent_.id) {
           // We have an outstanding change at this revision id.
           if (this.sent_.op.equals(revision.operation) && revision.author === this.userId_) {
@@ -961,11 +960,9 @@ firecalc.SocialCalcAdapter = (function () {
   };
 
   SocialCalcAdapter.prototype.applyOperation = function(operation) {
-    if (Array.isArray(operation)) {
-      this.executeOperations(operation);
-    } else {
-      this.applyOperationToSocialCalc(operation);
-    }
+    var operations = Array.isArray(operation) ? operation : [operation];
+    debugger;
+    this.executeOperations(operations);
   };
   
   SocialCalcAdapter.prototype.executeOperations = function(operations) {
