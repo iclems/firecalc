@@ -196,7 +196,7 @@ firecalc.FirebaseAdapter = (function (global) {
   var utils = firecalc.utils;
 
   // Save a checkpoint every 100 edits.
-  var CHECKPOINT_FREQUENCY = 100;
+  var CHECKPOINT_FREQUENCY = 10;
 
   function FirebaseAdapter (ref, userId, userColor) {
     this.ref_ = ref;
@@ -477,10 +477,13 @@ firecalc.FirebaseAdapter = (function (global) {
   };
 
   FirebaseAdapter.prototype.saveCheckpoint_ = function() {
-    this.ref_.child('checkpoint').set({
-      a: this.userId_,
-      o: this.document_.toJSON(),
-      id: revisionToId(this.revision_ - 1) // use the id for the revision we just wrote.
+    var self = this;
+    this.trigger('checkpoint', function(data) {
+      self.ref_.child('checkpoint').set({
+        a: this.userId_,
+        o: data,
+        id: revisionToId(this.revision_ - 1) // use the id for the revision we just wrote.
+      });
     });
   };
 
@@ -771,7 +774,7 @@ firecalc.EditorClient = (function () {
     this.editorAdapter.registerCallbacks({
       execute: function (data) {
         var op = new Operation('execute', data);
-        self.sendOperation(op); 
+        self.applyClient(op); 
       },
       ecell: function (data) { 
         // TODO: this is the local cursor move
@@ -784,6 +787,11 @@ firecalc.EditorClient = (function () {
       retry: function() { self.serverRetry(); },
       operation: function (operation) {
         self.applyServer(operation);
+      },
+      checkpoint: function(callback) {
+        if (!callback) return;
+        var snapshot = self.editorAdapter.getSnapshot();
+        callback(snapshot);
       }
     });
   }
@@ -836,6 +844,10 @@ firecalc.SocialCalcAdapter = (function () {
     this.SocialCalc_ = SocialCalc;
     this.ss_ = Spreadsheet;
     this.userId_ = userId;
+
+    window.addEventListener('resize', function() {
+      setTimeout(self.ss_.DoOnResize.bind(self.ss_), 0);
+    });
     
     SocialCalc.OrigDoPositionCalculations = SocialCalc.DoPositionCalculations;
     /*SocialCalc.DoPositionCalculations = function(){
@@ -927,6 +939,10 @@ firecalc.SocialCalcAdapter = (function () {
     var action = this.callbacks && this.callbacks[event];
     if (action) { action.apply(this, args); }
   };
+  
+  SocialCalcAdapter.prototype.getSnapshot = function() {
+    return this.ss_.CreateSpreadsheetSave();
+  };
 
   SocialCalcAdapter.prototype.applyOperation = function(operation) {
     if (Array.isArray(operation)) {
@@ -1006,7 +1022,7 @@ firecalc.SocialCalcAdapter = (function () {
         }.call(this)).join('\n');
         if (cmdstr.length) {
           refreshCmd = 'recalc';
-          ss.context.sheetobj.ScheduleSheetCommands(cmdstr + "\n" + refreshCmd + "\n", false, true);
+          ss.context.sheetobj.ScheduleSheetCommands(cmdstr + "\n" + refreshCmd + "\n", true, true);
         } else {
           ss.context.sheetobj.ScheduleSheetCommands("recalc\n", false, true);
         }
