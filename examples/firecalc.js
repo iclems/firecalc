@@ -160,30 +160,33 @@ firecalc.Operation = (function () {
   var utils = firecalc.utils;
 
   // Constructor for new operations.
-  function Operation (type, data) {
+  function Operation (data) {
     if (!this || this.constructor !== Operation) {
       // => function was called without 'new'
       return new Operation();
     }
     
-    if (type && data) {
-      this.type = type;
+    if (data) {
       this.data = data;
     }
   }
 
   Operation.prototype.equals = function (other) {
-    return (this.type == other.type) && firecalc.utils.arraysEqual(this.data, other.data);
+    return this.data == other.data;
+  };
+  
+  Operation.prototype.compose = function(other) {
+    return new Operation(this.data+'\n'+other.data);
   };
   
   // Converts operation into a JSON value.
   Operation.prototype.toJSON = function () {
-    return { t: this.type, o: this.data };
+    return { d: this.data };
   };
 
   // Converts a plain JS object into an operation and validates it.
   Operation.fromJSON = function (ops) {
-    return new Operation(ops.t, ops.o);
+    return new Operation(ops.d);
   };
 
   return Operation;
@@ -196,7 +199,7 @@ firecalc.FirebaseAdapter = (function (global) {
   var utils = firecalc.utils;
 
   // Save a checkpoint every 100 edits.
-  var CHECKPOINT_FREQUENCY = 100;
+  var CHECKPOINT_FREQUENCY = 5;
 
   function FirebaseAdapter (ref, userId, userColor) {
     this.ref_ = ref;
@@ -236,7 +239,7 @@ firecalc.FirebaseAdapter = (function (global) {
     });
 
   }
-  utils.makeEventEmitter(FirebaseAdapter, ['ready', 'cursor', 'operation', 'ack', 'retry']);
+  utils.makeEventEmitter(FirebaseAdapter, ['ready', 'cursor', 'operation', 'ack', 'retry', 'checkpoint']);
 
   FirebaseAdapter.prototype.dispose = function() {
     this.removeFirebaseCallbacks_();
@@ -359,8 +362,9 @@ firecalc.FirebaseAdapter = (function (global) {
     this.ref_.child('checkpoint').once('value', function(s) {
       if (self.zombie_) { return; } // just in case we were cleaned up before we got the checkpoint data.
       var revisionId = s.child('id').val(),  op = s.child('o').val(), author = s.child('a').val();
+      // Checkpoint found
       if (op != null && revisionId != null && author !== null) {
-        self.pendingReceivedRevisions_[revisionId] = { o: op, a: author };
+        self.loadCheckpoint_(op);
         self.checkpointRevision_ = revisionFromId(revisionId);
         self.monitorHistoryStartingAt_(self.checkpointRevision_ + 1);
       } else {
@@ -394,8 +398,8 @@ firecalc.FirebaseAdapter = (function (global) {
 
     var document_ = [];
     
-    // Compose the checkpoint and all subsequent revisions into a single operation to apply at once.
-    this.revision_ = this.checkpointRevision_;
+    // Ignore the checkpoint and compose all subsequent revisions into a single operation to apply at once.
+    this.revision_ = this.checkpointRevision_ ? this.checkpointRevision_+1 : 0;
     var revisionId = revisionToId(this.revision_), pending = this.pendingReceivedRevisions_;
     while (pending[revisionId] != null) {
       var revision = this.parseRevision_(pending[revisionId]);
@@ -476,11 +480,18 @@ firecalc.FirebaseAdapter = (function (global) {
     return { author: data.a, operation: op }
   };
 
+  FirebaseAdapter.prototype.loadCheckpoint_ = function(data) {
+    this.trigger('checkpoint', data);
+  };
+
   FirebaseAdapter.prototype.saveCheckpoint_ = function() {
-    this.ref_.child('checkpoint').set({
-      a: this.userId_,
-      o: this.document_.toJSON(),
-      id: revisionToId(this.revision_ - 1) // use the id for the revision we just wrote.
+    var self = this;
+    this.trigger('checkpoint', function(data) {
+      self.ref_.child('checkpoint').set({
+        a: self.userId_,
+        o: data,
+        id: revisionToId(self.revision_ - 1) // use the id for the revision we just wrote.
+      });
     });
   };
 
@@ -769,9 +780,8 @@ firecalc.EditorClient = (function () {
     var self = this;
 
     this.editorAdapter.registerCallbacks({
-      execute: function (data) {
-        var op = new Operation('execute', data);
-        self.sendOperation(op); 
+      operation: function (data) {
+        self.applyClient(new Operation(data)); 
       },
       ecell: function (data) { 
         // TODO: this is the local cursor move
@@ -784,6 +794,14 @@ firecalc.EditorClient = (function () {
       retry: function() { self.serverRetry(); },
       operation: function (operation) {
         self.applyServer(operation);
+      },
+      checkpoint: function(a) {
+        if (typeof a == 'function') {
+          var snapshot = self.editorAdapter.getSnapshot();
+          a(snapshot);
+        } else if (typeof a == 'string') {
+          self.editorAdapter.loadSnapshot(a);
+        }
       }
     });
   }
@@ -828,7 +846,8 @@ var firecalc = firecalc || { };
 
 firecalc.SocialCalcAdapter = (function () {
   'use strict';
-
+  
+  var Operation = firecalc.Operation;
 
   function SocialCalcAdapter(SocialCalc, Spreadsheet, userId) {
     
@@ -836,6 +855,10 @@ firecalc.SocialCalcAdapter = (function () {
     this.SocialCalc_ = SocialCalc;
     this.ss_ = Spreadsheet;
     this.userId_ = userId;
+
+    window.addEventListener('resize', function() {
+      setTimeout(self.ss_.DoOnResize.bind(self.ss_), 0);
+    });
     
     SocialCalc.OrigDoPositionCalculations = SocialCalc.DoPositionCalculations;
     /*SocialCalc.DoPositionCalculations = function(){
@@ -864,10 +887,7 @@ firecalc.SocialCalcAdapter = (function () {
         return;
       }
       if (!isRemote && cmdstr !== 'redisplay' && cmdstr !== 'recalc') {
-        self.trigger('execute', {
-          cmdstr: cmdstr,
-          saveundo: saveundo
-        });
+        self.trigger('operation', cmdstr);
       }
       return SocialCalc.OrigScheduleSheetCommands(sheet, cmdstr, saveundo, isRemote);
     };
@@ -927,12 +947,47 @@ firecalc.SocialCalcAdapter = (function () {
     var action = this.callbacks && this.callbacks[event];
     if (action) { action.apply(this, args); }
   };
+  
+  SocialCalcAdapter.prototype.getSnapshot = function() {
+    return this.ss_.CreateSpreadsheetSave();
+  };
+
+  SocialCalcAdapter.prototype.loadSnapshot = function(data) {
+    var parts = this.ss_.DecodeSpreadsheetSave(data);
+    if (parts && parts != null && parts.sheet) {
+      this.ss_.sheet.ResetSheet();
+      this.ss_.ParseSheetSave(data.substring(parts.sheet.start, parts.sheet.end));
+    }
+  };
 
   SocialCalcAdapter.prototype.applyOperation = function(operation) {
     if (Array.isArray(operation)) {
-      this.applyOperationToSocialCalc({ type: 'log', data: { log: operation } });
+      this.executeOperations(operation);
     } else {
       this.applyOperationToSocialCalc(operation);
+    }
+  };
+  
+  SocialCalcAdapter.prototype.executeOperations = function(operations) {
+    var line, cmdstr = (function(){
+      var i$, len$, results$ = [];
+      for (i$ = 0, len$ = operations.length; i$ < len$; ++i$) {
+        line = operations[i$];
+        if (typeof line != 'string') {
+          line = line.data;
+          if (!line) continue;
+        }
+        if (!/^re(calc|display)$/.test(line)) {
+          results$.push(line);
+        }
+      }
+      return results$;
+    }.call(this)).join('\n');
+    if (cmdstr.length) {
+      var refreshCmd = 'recalc';
+      this.ss_.context.sheetobj.ScheduleSheetCommands(cmdstr + "\n" + refreshCmd + "\n", true, true);
+    } else {
+      this.ss_.context.sheetobj.ScheduleSheetCommands("recalc\n", false, true);
     }
   };
   
@@ -981,23 +1036,15 @@ firecalc.SocialCalcAdapter = (function () {
         }
         break;
       case 'log':
-/*        if (SocialCalc.hadSnapshot) {
-          break;
-        }
-        SocialCalc.hadSnapshot = true;
-        */
-        if (data.snapshot) {
-          parts = ss.DecodeSpreadsheetSave(data.snapshot);
-        }
-        if (parts && parts != null && parts.sheet) {
-          ss.sheet.ResetSheet();
-          ss.ParseSheetSave(data.snapshot.substring(parts.sheet.start, parts.sheet.end));
-        }
         cmdstr = (function(){
           var i$, ref$, len$, results$ = [];
+          if (!data.log) return results$;
           for (i$ = 0, len$ = (ref$ = data.log).length; i$ < len$; ++i$) {
             line = ref$[i$];
-            line = (typeof line == 'string') ? line : line.data.cmdstr;
+            if (typeof line != 'string') {
+              line = line.data;
+              if (!line) continue;
+            }
             if (!/^re(calc|display)$/.test(line)) {
               results$.push(line);
             }
@@ -1006,7 +1053,7 @@ firecalc.SocialCalcAdapter = (function () {
         }.call(this)).join('\n');
         if (cmdstr.length) {
           refreshCmd = 'recalc';
-          ss.context.sheetobj.ScheduleSheetCommands(cmdstr + "\n" + refreshCmd + "\n", false, true);
+          ss.context.sheetobj.ScheduleSheetCommands(cmdstr + "\n" + refreshCmd + "\n", true, true);
         } else {
           ss.context.sheetobj.ScheduleSheetCommands("recalc\n", false, true);
         }
@@ -1029,7 +1076,7 @@ firecalc.SocialCalcAdapter = (function () {
         }
         break;
       case 'execute':
-        ss.context.sheetobj.ScheduleSheetCommands(data.cmdstr, data.saveundo, true);
+        ss.context.sheetobj.ScheduleSheetCommands(data, true, true);
         /*if (ss.currentTab === ((ref$ = ss.tabnums) != null ? ref$.graph : void 8)) {
           setTimeout(function(){
             return window.DoGraph(false, false);
