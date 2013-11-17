@@ -1,0 +1,50 @@
+<!doctype html>
+<!-- See http://www.firecalc.io/docs/ for detailed embedding docs. -->
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <!-- Include Firebase -->
+  <script src="https://cdn.firebase.com/v0/firebase.js"></script>
+
+  <!-- Include EtherCalc -->
+  <script src="../ethercalc/static/jquery.js"></script>
+  <script src="../ethercalc/static/ethercalc.js"></script>
+  <link rel="stylesheet" href="../ethercalc/static/socialcalc.css" />
+
+  <!-- Include Firecalc -->
+  <script src="firecalc.js"></script>
+
+  <!-- Helper for generating URLs / Firebase references for example purposes.
+       Not necessary in production apps. -->
+  <script src="example-helper.js"></script>
+
+  <style>
+    html { height: 100%; }
+    body { margin: 0; height: 100%; position: relative; }
+      /* Height / width / positioning can be customized for your use case.
+         For demo purposes, we make firecalc fill the entire browser. */
+    .firecalc {
+      position: absolute; left: 0; top: 0; bottom: 0; right: 0; height: auto;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="firecalc"></div>
+
+  <script>
+    //// Initialize Firebase.
+    var firecalcRef = getExampleRef();
+    // TODO: Replace above line with:
+    // var firecalcRef = new Firebase('<YOUR FIREBASE URL>');
+
+    //// Create firecalc (with rich text toolbar and shortcuts enabled).
+    var firecalc = new Firecalc(firecalcRef, document.getElementById('firecalc'), {});
+
+    //// Initialize contents.
+    firecalc.on('ready', function() {
+    });
+  </script>
+</body>
+</html>
