@@ -1,0 +1,1163 @@
+/*
+ * firecalc
+ *
+ * Copyright 2013 Clement Wehrung
+ * with code from ot.js (Copyright 2012-2013 Tim Baumann) and Michael Lehenbauer (Firepad)
+ */
+
+var Firecalc = (function() {
+var firecalc = firecalc || { };
+firecalc.utils = { };
+
+firecalc.utils.arraysEqual = function(a, b) {
+  if (a === b) return true;
+  if (a == null || b == null) return false;
+  if (a.length != b.length) return false;
+
+  // If you don't care about the order of the elements inside
+  // the array, you should sort both arrays here.
+
+  for (var i = 0; i < a.length; ++i) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+};
+
+firecalc.utils.makeEventEmitter = function(clazz, opt_allowedEVents) {
+  clazz.prototype.allowedEvents_ = opt_allowedEVents;
+
+  clazz.prototype.on = function(eventType, callback, context) {
+    this.validateEventType_(eventType);
+    this.eventListeners_ = this.eventListeners_ || { };
+    this.eventListeners_[eventType] = this.eventListeners_[eventType] || [];
+    this.eventListeners_[eventType].push({ callback: callback, context: context });
+  };
+
+  clazz.prototype.off = function(eventType, callback) {
+    this.validateEventType_(eventType);
+    this.eventListeners_ = this.eventListeners_ || { };
+    var listeners = this.eventListeners_[eventType] || [];
+    for(var i = 0; i < listeners.length; i++) {
+      if (listeners[i].callback === callback) {
+        listeners.splice(i, 1);
+        return;
+      }
+    }
+  };
+
+  clazz.prototype.trigger =  function(eventType /*, args ... */) {
+    this.eventListeners_ = this.eventListeners_ || { };
+    var listeners = this.eventListeners_[eventType] || [];
+    for(var i = 0; i < listeners.length; i++) {
+      listeners[i].callback.apply(listeners[i].context, Array.prototype.slice.call(arguments, 1));
+    }
+  };
+
+  clazz.prototype.validateEventType_ = function(eventType) {
+    if (this.allowedEvents_) {
+      var allowed = false;
+      for(var i = 0; i < this.allowedEvents_.length; i++) {
+        if (this.allowedEvents_[i] === eventType) {
+          allowed = true;
+          break;
+        }
+      }
+      if (!allowed) {
+        throw new Error('Unknown event "' + eventType + '"');
+      }
+    }
+  };
+};
+
+firecalc.utils.elt = function(tag, content, attrs) {
+  var e = document.createElement(tag);
+  if (typeof content === "string") {
+    firecalc.utils.setTextContent(e, content);
+  } else if (content) {
+    for (var i = 0; i < content.length; ++i) { e.appendChild(content[i]); }
+  }
+  for(var attr in (attrs || { })) {
+    e.setAttribute(attr, attrs[attr]);
+  }
+  return e;
+};
+
+firecalc.utils.setTextContent = function(e, str) {
+  e.innerHTML = "";
+  e.appendChild(document.createTextNode(str));
+};
+
+
+firecalc.utils.on = function(emitter, type, f, capture) {
+  if (emitter.addEventListener) {
+    emitter.addEventListener(type, f, capture || false);
+  } else if (emitter.attachEvent) {
+    emitter.attachEvent("on" + type, f);
+  }
+};
+
+firecalc.utils.off = function(emitter, type, f, capture) {
+  if (emitter.removeEventListener) {
+    emitter.removeEventListener(type, f, capture || false);
+  } else if (emitter.detachEvent) {
+    emitter.detachEvent("on" + type, f);
+  }
+};
+
+firecalc.utils.preventDefault = function(e) {
+  if (e.preventDefault) {
+    e.preventDefault();
+  } else {
+    e.returnValue = false;
+  }
+};
+
+firecalc.utils.stopPropagation = function(e) {
+  if (e.stopPropagation) {
+    e.stopPropagation();
+  } else {
+    e.cancelBubble = true;
+  }
+};
+
+firecalc.utils.stopEvent = function(e) {
+  firecalc.utils.preventDefault(e);
+  firecalc.utils.stopPropagation(e);
+};
+
+firecalc.utils.stopEventAnd = function(fn) {
+  return function(e) {
+    fn(e);
+    firecalc.utils.stopEvent(e);
+    return false;
+  };
+};
+
+firecalc.utils.trim = function(str) {
+  return str.replace(/^\s+/g, '').replace(/\s+$/g, '');
+};
+
+firecalc.utils.assert = function assert (b, msg) {
+  if (!b) {
+    throw new Error(msg || "assertion error");
+  }
+};
+
+firecalc.utils.log = function() {
+  if (typeof console !== 'undefined' && typeof console.log !== 'undefined') {
+    var args = ['firecalc:'];
+    for(var i = 0; i < arguments.length; i++) {
+      args.push(arguments[i]);
+    }
+    console.log.apply(console, args);
+  }
+};
+
+var firecalc = firecalc || { };
+
+firecalc.Operation = (function () {
+  'use strict';
+  var utils = firecalc.utils;
+
+  // Constructor for new operations.
+  function Operation (type, data) {
+    if (!this || this.constructor !== Operation) {
+      // => function was called without 'new'
+      return new Operation();
+    }
+    
+    if (type && data) {
+      this.type = type;
+      this.data = data;
+    }
+  }
+
+  Operation.prototype.equals = function (other) {
+    return (this.type == other.type) && firecalc.utils.arraysEqual(this.data, other.data);
+  };
+  
+  // Converts operation into a JSON value.
+  Operation.prototype.toJSON = function () {
+    return { t: this.type, o: this.data };
+  };
+
+  // Converts a plain JS object into an operation and validates it.
+  Operation.fromJSON = function (ops) {
+    return new Operation(ops.t, ops.o);
+  };
+
+  return Operation;
+}());
+
+var firecalc = firecalc || { };
+
+firecalc.FirebaseAdapter = (function (global) {
+  var Operation = firecalc.Operation;
+  var utils = firecalc.utils;
+
+  // Save a checkpoint every 100 edits.
+  var CHECKPOINT_FREQUENCY = 100;
+
+  function FirebaseAdapter (ref, userId, userColor) {
+    this.ref_ = ref;
+    this.ready_ = false;
+    this.firebaseCallbacks_ = [];
+    this.zombie_ = false;
+
+    // The next expected revision.
+    this.revision_ = 0;
+
+    // This is used for two purposes:
+    // 1) On initialization, we fill this with the latest checkpoint and any subsequent operations and then
+    //      process them all together.
+    // 2) If we ever receive revisions out-of-order (e.g. rev 5 before rev 4), we queue them here until it's time
+    //    for them to be handled. [this should never happen with well-behaved clients; but if it /does/ happen we want
+    //    to handle it gracefully.]
+    this.pendingReceivedRevisions_ = { };
+
+    this.setUserId(userId);
+    this.setColor(userColor);
+
+    var self = this;
+    this.firebaseOn_(ref.root().child('.info/connected'), 'value', function(snapshot) {
+      if (snapshot.val() === true) {
+        self.initializeUserData_();
+      }
+    }, this);
+
+    // Avoid triggering any events until our callers have had a chance to attach their listeners.
+    setTimeout(function() {
+      self.monitorHistory_();
+    }, 0);
+
+    // Once we're initialized, start tracking users' cursors.
+    this.on('ready', function() {
+      self.monitorCursors_();
+    });
+
+  }
+  utils.makeEventEmitter(FirebaseAdapter, ['ready', 'cursor', 'operation', 'ack', 'retry']);
+
+  FirebaseAdapter.prototype.dispose = function() {
+    this.removeFirebaseCallbacks_();
+
+    this.userRef_.child('cursor').remove();
+    this.userRef_.child('color').remove();
+
+    this.ref_ = null;
+    this.document_ = null;
+    this.zombie_ = true;
+  };
+
+  FirebaseAdapter.prototype.setUserId = function(userId) {
+    if (this.userRef_) {
+      // clean up existing data.
+      this.userRef_.child('cursor').remove();
+      this.userRef_.child('cursor').onDisconnect().cancel();
+      this.userRef_.child('color').remove();
+      this.userRef_.child('color').onDisconnect().cancel();
+    }
+
+    this.userId_ = userId;
+    this.userRef_ = this.ref_.child('users').child(userId);
+
+    this.initializeUserData_();
+  };
+
+  FirebaseAdapter.prototype.isHistoryEmpty = function() {
+    assert(this.ready_, "Not ready yet.");
+    return this.revision_ === 0;
+  };
+
+  FirebaseAdapter.prototype.sendOperation = function (operation, cursor) {
+    var self = this;
+
+    // If we're not ready yet, do nothing right now, and trigger a retry when we're ready.
+    if (!this.ready_) {
+      this.on('ready', function() {
+        self.trigger('retry');
+      });
+      return;
+    }
+
+    // Convert revision into an id that will sort properly lexicographically.
+    var revisionId = revisionToId(this.revision_);
+
+    function doTransaction(revisionId, revisionData) {
+      self.ref_.child('history').child(revisionId).transaction(function(current) {
+        if (current === null) {
+          return revisionData;
+        }
+      }, function(error, committed) {
+        if (error) {
+          if (error.message === 'disconnect') {
+            if (self.sent_ && self.sent_.id === revisionId) {
+              // We haven't seen our transaction succeed or fail.  Send it again.
+              setTimeout(function() {
+                doTransaction(revisionId, revisionData);
+              }, 0);
+            }
+          } else {
+            utils.log('Transaction failure!', error);
+            throw error;
+          }
+        }
+      }, /*applyLocally=*/false);
+    }
+
+    this.sent_ = { id: revisionId, op: operation };
+    doTransaction(revisionId, { a: self.userId_, o: operation.toJSON() });
+  };
+
+  FirebaseAdapter.prototype.sendCursor = function (obj) {
+    this.userRef_.child('cursor').set(obj);
+    this.cursor_ = obj;
+  };
+
+  FirebaseAdapter.prototype.setColor = function(color) {
+    this.userRef_.child('color').set(color);
+    this.color_ = color;
+  };
+
+  FirebaseAdapter.prototype.registerCallbacks = function(callbacks) {
+    for (var eventType in callbacks) {
+      this.on(eventType, callbacks[eventType]);
+    }
+  };
+
+  FirebaseAdapter.prototype.initializeUserData_ = function() {
+    this.userRef_.child('cursor').onDisconnect().remove();
+    this.userRef_.child('color').onDisconnect().remove();
+
+    this.sendCursor(this.cursor_ || null);
+    this.setColor(this.color_ || null);
+  };
+
+  FirebaseAdapter.prototype.monitorCursors_ = function() {
+    var usersRef = this.ref_.child('users'), self = this;
+    var user2Callback = { };
+
+    function childChanged(childSnap) {
+      var userId = childSnap.name();
+      var userData = childSnap.val();
+      self.trigger('cursor', userId, userData.cursor, userData.color);
+    }
+
+    this.firebaseOn_(usersRef, 'child_added', childChanged);
+    this.firebaseOn_(usersRef, 'child_changed', childChanged);
+
+    this.firebaseOn_(usersRef, 'child_removed', function(childSnap) {
+      var userId = childSnap.name();
+      self.firebaseOff_(childSnap.ref(), 'value', user2Callback[userId]);
+      self.trigger('cursor', userId, null);
+    });
+  };
+
+  FirebaseAdapter.prototype.monitorHistory_ = function() {
+    var self = this;
+    // Get the latest checkpoint as a starting point so we don't have to re-play entire history.
+    this.ref_.child('checkpoint').once('value', function(s) {
+      if (self.zombie_) { return; } // just in case we were cleaned up before we got the checkpoint data.
+      var revisionId = s.child('id').val(),  op = s.child('o').val(), author = s.child('a').val();
+      if (op != null && revisionId != null && author !== null) {
+        self.pendingReceivedRevisions_[revisionId] = { o: op, a: author };
+        self.checkpointRevision_ = revisionFromId(revisionId);
+        self.monitorHistoryStartingAt_(self.checkpointRevision_ + 1);
+      } else {
+        self.checkpointRevision_ = 0;
+        self.monitorHistoryStartingAt_(self.checkpointRevision_);
+      }
+    });
+  };
+
+  FirebaseAdapter.prototype.monitorHistoryStartingAt_ = function(revision) {
+    var historyRef = this.ref_.child('history').startAt(null, revisionToId(revision));
+    var self = this;
+
+    setTimeout(function() {
+      self.firebaseOn_(historyRef, 'child_added', function(revisionSnapshot) {
+        var revisionId = revisionSnapshot.name();
+        self.pendingReceivedRevisions_[revisionId] = revisionSnapshot.val();
+        if (self.ready_) {
+          self.handlePendingReceivedRevisions_();
+        }
+      });
+
+      historyRef.once('value', function() {
+        self.handleInitialRevisions_();
+      });
+    }, 0);
+  };
+
+  FirebaseAdapter.prototype.handleInitialRevisions_ = function() {
+    assert(!this.ready_, "Should not be called multiple times.");
+
+    var document_ = [];
+    
+    // Compose the checkpoint and all subsequent revisions into a single operation to apply at once.
+    this.revision_ = this.checkpointRevision_;
+    var revisionId = revisionToId(this.revision_), pending = this.pendingReceivedRevisions_;
+    while (pending[revisionId] != null) {
+      var revision = this.parseRevision_(pending[revisionId]);
+      if (!revision) {
+        // If a misbehaved client adds a bad operation, just ignore it.
+        utils.log('Invalid operation.', this.ref_.toString(), revisionId, pending[revisionId]);
+      } else {
+        document_.push(revision.operation);
+      }
+
+      delete pending[revisionId];
+      this.revision_++;
+      revisionId = revisionToId(this.revision_);
+    }
+
+    this.trigger('operation', document_);
+
+    this.ready_ = true;
+    var self = this;
+    setTimeout(function() {
+      self.trigger('ready');
+    }, 0);
+  };
+
+  FirebaseAdapter.prototype.handlePendingReceivedRevisions_ = function() {
+    var pending = this.pendingReceivedRevisions_;
+    var revisionId = revisionToId(this.revision_);
+    var triggerRetry = false;
+    while (pending[revisionId] != null) {
+      this.revision_++;
+
+      var revision = this.parseRevision_(pending[revisionId]);
+      if (!revision) {
+        // If a misbehaved client adds a bad operation, just ignore it.
+        utils.log('Invalid operation.', this.ref_.toString(), revisionId, pending[revisionId]);
+      } else {
+        if (this.sent_ && revisionId === this.sent_.id) {
+          // We have an outstanding change at this revision id.
+          if (this.sent_.op.equals(revision.operation) && revision.author === this.userId_) {
+            // This is our change; it succeeded.
+            if (this.revision_ % CHECKPOINT_FREQUENCY === 0) {
+              this.saveCheckpoint_();
+            }
+            this.sent_ = null;
+            this.trigger('ack');
+          } else {
+            // our op failed.  Trigger a retry after we're done catching up on any incoming ops.
+            triggerRetry = true;
+            this.trigger('operation', revision.operation);
+          }
+        } else {
+          this.trigger('operation', revision.operation);
+        }
+      }
+      delete pending[revisionId];
+
+      revisionId = revisionToId(this.revision_);
+    }
+
+    if (triggerRetry) {
+      this.sent_ = null;
+      this.trigger('retry');
+    }
+  };
+
+  FirebaseAdapter.prototype.parseRevision_ = function(data) {
+    // We could do some of this validation via security rules.  But it's nice to be robust, just in case.
+    if (typeof data !== 'object') { return null; }
+    if (typeof data.a !== 'string' || typeof data.o !== 'object') { return null; }
+    var op = null;
+    try {
+      op = Operation.fromJSON(data.o);
+    }
+    catch (e) {
+      return null;
+    }
+
+    return { author: data.a, operation: op }
+  };
+
+  FirebaseAdapter.prototype.saveCheckpoint_ = function() {
+    this.ref_.child('checkpoint').set({
+      a: this.userId_,
+      o: this.document_.toJSON(),
+      id: revisionToId(this.revision_ - 1) // use the id for the revision we just wrote.
+    });
+  };
+
+  FirebaseAdapter.prototype.firebaseOn_ = function(ref, eventType, callback, context) {
+    this.firebaseCallbacks_.push({ref: ref, eventType: eventType, callback: callback, context: context });
+    ref.on(eventType, callback, context);
+    return callback;
+  };
+
+  FirebaseAdapter.prototype.firebaseOff_ = function(ref, eventType, callback, context) {
+    ref.off(eventType, callback, context);
+    for(var i = 0; i < this.firebaseCallbacks_.length; i++) {
+      var l = this.firebaseCallbacks_[i];
+      if (l.ref === ref && l.eventType === eventType && l.callback === callback && l.context === context) {
+        this.firebaseCallbacks_.splice(i, 1);
+        break;
+      }
+    }
+  };
+
+  FirebaseAdapter.prototype.removeFirebaseCallbacks_ = function() {
+    for(var i = 0; i < this.firebaseCallbacks_.length; i++) {
+      var l = this.firebaseCallbacks_[i];
+      l.ref.off(l.eventType, l.callback, l.context);
+    }
+    this.firebaseCallbacks_ = [];
+  };
+
+  // Throws an error if the first argument is falsy. Useful for debugging.
+  function assert (b, msg) {
+    if (!b) {
+      throw new Error(msg || "assertion error");
+    }
+  }
+
+  // Based off ideas from http://www.zanopha.com/docs/elen.pdf
+  var characters = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+  function revisionToId(revision) {
+    if (revision === 0) {
+      return 'A0';
+    }
+
+    var str = '';
+    while (revision > 0) {
+      var digit = (revision % characters.length);
+      str = characters[digit] + str;
+      revision -= digit;
+      revision /= characters.length;
+    }
+
+    // Prefix with length (starting at 'A' for length 1) to ensure the id's sort lexicographically.
+    var prefix = characters[str.length + 9];
+    return prefix + str;
+  }
+
+  function revisionFromId(revisionId) {
+    assert (revisionId.length > 0 && revisionId[0] === characters[revisionId.length + 8]);
+    var revision = 0;
+    for(var i = 1; i < revisionId.length; i++) {
+      revision *= characters.length;
+      revision += characters.indexOf(revisionId[i]);
+    }
+    return revision;
+  }
+
+  return FirebaseAdapter;
+}());
+
+var firecalc = firecalc || { };
+firecalc.Client = (function () {
+  'use strict';
+
+  // Client constructor
+  function Client () {
+    this.state = synchronized_; // start state
+  }
+
+  Client.prototype.setState = function (state) {
+    this.state = state;
+  };
+
+  // Call this method when the user changes the document.
+  Client.prototype.applyClient = function (operation) {
+    this.setState(this.state.applyClient(this, operation));
+  };
+
+  // Call this method with a new operation from the server
+  Client.prototype.applyServer = function (operation) {
+    this.setState(this.state.applyServer(this, operation));
+  };
+
+  Client.prototype.serverAck = function () {
+    this.setState(this.state.serverAck(this));
+  };
+  
+  // Transforms a cursor position from the latest known server state to the
+  // current client state. For example, if we get from the server the
+  // information that another user's cursor is at position 3, but the server
+  // hasn't yet received our newest operation, an insertion of 5 characters at
+  // the beginning of the document, the correct position of the other user's
+  // cursor in our current document is 8.
+  Client.prototype.transformCursor = function (cursor) {
+    return this.state.transformCursor(cursor);
+  };
+  
+  Client.prototype.serverRetry = function() {
+    this.setState(this.state.serverRetry(this));
+  };
+
+  // Override this method.
+  Client.prototype.sendOperation = function (operation) {
+    throw new Error("sendOperation must be defined in child class");
+  };
+
+  // Override this method.
+  Client.prototype.applyOperation = function (operation) {
+    throw new Error("applyOperation must be defined in child class");
+  };
+
+
+  // In the 'Synchronized' state, there is no pending operation that the client
+  // has sent to the server.
+  function Synchronized () {}
+  Client.Synchronized = Synchronized;
+
+  Synchronized.prototype.applyClient = function (client, operation) {
+    // When the user makes an edit, send the operation to the server and
+    // switch to the 'AwaitingConfirm' state
+    client.sendOperation(operation);
+    return new AwaitingConfirm(operation);
+  };
+
+  Synchronized.prototype.applyServer = function (client, operation) {
+    // When we receive a new operation from the server, the operation can be
+    // simply applied to the current document
+    client.applyOperation(operation);
+    return this;
+  };
+
+  Synchronized.prototype.serverAck = function (client) {
+    throw new Error("There is no pending operation.");
+  };
+
+  Synchronized.prototype.serverRetry = function(client) {
+    throw new Error("There is no pending operation.");
+  };
+
+  // Nothing to do because the latest server state and client state are the same.
+  Synchronized.prototype.transformCursor = function (cursor) { return cursor; };
+
+  // Singleton
+  var synchronized_ = new Synchronized();
+
+
+  // In the 'AwaitingConfirm' state, there's one operation the client has sent
+  // to the server and is still waiting for an acknowledgement.
+  function AwaitingConfirm (outstanding) {
+    // Save the pending operation
+    this.outstanding = outstanding;
+  }
+  Client.AwaitingConfirm = AwaitingConfirm;
+
+  AwaitingConfirm.prototype.applyClient = function (client, operation) {
+    // When the user makes an edit, don't send the operation immediately,
+    // instead switch to 'AwaitingWithBuffer' state
+    return new AwaitingWithBuffer(this.outstanding, operation);
+  };
+
+  AwaitingConfirm.prototype.applyServer = function (client, operation) {
+    // This is another client's operation. Visualization:
+    //
+    //                   /\
+    // this.outstanding /  \ operation
+    //                 /    \
+    //                 \    /
+    //  pair[1]         \  / pair[0] (new outstanding)
+    //  (can be applied  \/
+    //  to the client's
+    //  current document)
+    var pair = operation.constructor.transform(this.outstanding, operation);
+    client.applyOperation(pair[1]);
+    return new AwaitingConfirm(pair[0]);
+  };
+
+  AwaitingConfirm.prototype.serverAck = function (client) {
+    // The client's operation has been acknowledged
+    // => switch to synchronized state
+    return synchronized_;
+  };
+
+  AwaitingConfirm.prototype.serverRetry = function (client) {
+    client.sendOperation(this.outstanding);
+    return this;
+  };
+
+  AwaitingConfirm.prototype.transformCursor = function (cursor) {
+    return cursor.transform(this.outstanding);
+  };
+
+  // In the 'AwaitingWithBuffer' state, the client is waiting for an operation
+  // to be acknowledged by the server while buffering the edits the user makes
+  function AwaitingWithBuffer (outstanding, buffer) {
+    // Save the pending operation and the user's edits since then
+    this.outstanding = outstanding;
+    this.buffer = buffer;
+  }
+  Client.AwaitingWithBuffer = AwaitingWithBuffer;
+
+  AwaitingWithBuffer.prototype.applyClient = function (client, operation) {
+    // Compose the user's changes onto the buffer
+    var newBuffer = this.buffer.compose(operation);
+    return new AwaitingWithBuffer(this.outstanding, newBuffer);
+  };
+
+  AwaitingWithBuffer.prototype.applyServer = function (client, operation) {
+    // Operation comes from another client
+    //
+    //                       /\
+    //     this.outstanding /  \ operation
+    //                     /    \
+    //                    /\    /
+    //       this.buffer /  \* / pair1[0] (new outstanding)
+    //                  /    \/
+    //                  \    /
+    //          pair2[1] \  / pair2[0] (new buffer)
+    // the transformed    \/
+    // operation -- can
+    // be applied to the
+    // client's current
+    // document
+    //
+    // * pair1[1]
+    var transform = operation.constructor.transform;
+    var pair1 = transform(this.outstanding, operation);
+    var pair2 = transform(this.buffer, pair1[1]);
+    client.applyOperation(pair2[1]);
+    return new AwaitingWithBuffer(pair1[0], pair2[0]);
+  };
+
+  AwaitingWithBuffer.prototype.serverRetry = function (client) {
+    // Merge with our buffer and resend.
+    var outstanding = this.outstanding.compose(this.buffer);
+    client.sendOperation(outstanding);
+    return new AwaitingConfirm(outstanding);
+  };
+
+  AwaitingWithBuffer.prototype.serverAck = function (client) {
+    // The pending operation has been acknowledged
+    // => send buffer
+    client.sendOperation(this.buffer);
+    return new AwaitingConfirm(this.buffer);
+  };
+
+  AwaitingWithBuffer.prototype.transformCursor = function (cursor) {
+    return cursor.transform(this.outstanding).transform(this.buffer);
+  };
+
+  return Client;
+
+}());
+
+var firecalc = firecalc || { };
+
+firecalc.EditorClient = (function () {
+  'use strict';
+
+  var Client = firecalc.Client;
+  var Operation = firecalc.Operation;
+
+  function OtherClient (id, editorAdapter) {
+    this.id = id;
+    this.editorAdapter = editorAdapter;
+  }
+
+  OtherClient.prototype.setColor = function (color) {
+    this.color = color;
+  };
+
+  function EditorClient (serverAdapter, editorAdapter) {
+    Client.call(this);
+    this.serverAdapter = serverAdapter;
+    this.editorAdapter = editorAdapter;
+
+    this.clients = { };
+
+    var self = this;
+
+    this.editorAdapter.registerCallbacks({
+      execute: function (data) {
+        var op = new Operation('execute', data);
+        self.sendOperation(op); 
+      },
+      ecell: function (data) { 
+        // TODO: this is the local cursor move
+        return;
+      }
+    });
+
+    this.serverAdapter.registerCallbacks({
+      ack: function () { self.serverAck(); },
+      retry: function() { self.serverRetry(); },
+      operation: function (operation) {
+        self.applyServer(operation);
+      }
+    });
+  }
+
+  inherit(EditorClient, Client);
+
+  EditorClient.prototype.getClientObject = function (clientId) {
+    var client = this.clients[clientId];
+    if (client) { return client; }
+    return this.clients[clientId] = new OtherClient(
+      clientId,
+      this.editorAdapter
+    );
+  };
+
+  EditorClient.prototype.onChange = function (textOperation, inverse) {
+    this.applyClient(textOperation);
+  };
+
+  EditorClient.prototype.sendOperation = function (operation) {
+    this.serverAdapter.sendOperation(operation);
+  };
+
+  EditorClient.prototype.applyOperation = function (operation) {
+    this.editorAdapter.applyOperation(operation);
+  };
+
+  // Set Const.prototype.__proto__ to Super.prototype
+  function inherit (Const, Super) {
+    function F () {}
+    F.prototype = Super.prototype;
+    Const.prototype = new F();
+    Const.prototype.constructor = Const;
+  }
+
+  function last (arr) { return arr[arr.length - 1]; }
+
+  return EditorClient;
+}());
+
+var firecalc = firecalc || { };
+
+firecalc.SocialCalcAdapter = (function () {
+  'use strict';
+
+
+  function SocialCalcAdapter(SocialCalc, Spreadsheet, userId) {
+    
+    var self = this;
+    this.SocialCalc_ = SocialCalc;
+    this.ss_ = Spreadsheet;
+    this.userId_ = userId;
+    
+    SocialCalc.OrigDoPositionCalculations = SocialCalc.DoPositionCalculations;
+    /*SocialCalc.DoPositionCalculations = function(){
+      var ref$;
+      SocialCalc.OrigDoPositionCalculations.apply(SocialCalc, arguments);
+      if (typeof (ref$ = SocialCalc.Callbacks).broadcast === 'function') {
+        ref$.broadcast('ask.ecell');
+      }
+    };*/
+    SocialCalc.hadSnapshot = false;
+    SocialCalc.OrigSizeSSDiv = SocialCalc.SizeSSDiv;
+    SocialCalc.SizeSSDiv = function(spreadsheet){
+      if (!(spreadsheet != null && spreadsheet.parentNode)) {
+        return;
+      }
+      return SocialCalc.OrigSizeSSDiv(spreadsheet);
+    };
+    SocialCalc.Sheet.prototype.ScheduleSheetCommands = function(){
+      return SocialCalc.ScheduleSheetCommands.apply(SocialCalc, [this].concat([].slice.call(arguments)));
+    };
+    SocialCalc.OrigScheduleSheetCommands = SocialCalc.ScheduleSheetCommands;
+    SocialCalc.ScheduleSheetCommands = function(sheet, cmdstr, saveundo, isRemote){
+      var ref$;
+      cmdstr = cmdstr.replace(/\n\n+/g, '\n');
+      if (!/\S/.test(cmdstr)) {
+        return;
+      }
+      if (!isRemote && cmdstr !== 'redisplay' && cmdstr !== 'recalc') {
+        self.trigger('execute', {
+          cmdstr: cmdstr,
+          saveundo: saveundo
+        });
+      }
+      return SocialCalc.OrigScheduleSheetCommands(sheet, cmdstr, saveundo, isRemote);
+    };
+    SocialCalc.MoveECell = function(editor, newcell){
+      var highlights, ref$, cell, f;
+      highlights = editor.context.highlights;
+      if (editor.ecell) {
+        if (editor.ecell.coord === newcell) {
+          return newcell;
+        }
+        self.trigger('ecell', {
+          original: editor.ecell.coord,
+          ecell: newcell
+        });
+        cell = SocialCalc.GetEditorCellElement(editor, editor.ecell.row, editor.ecell.col);
+        delete highlights[editor.ecell.coord];
+        if (editor.range2.hasrange && editor.ecell.row >= editor.range2.top && editor.ecell.row <= editor.range2.bottom && editor.ecell.col >= editor.range2.left && editor.ecell.col <= editor.range2.right) {
+          highlights[editor.ecell.coord] = 'range2';
+        }
+        editor.UpdateCellCSS(cell, editor.ecell.row, editor.ecell.col);
+        editor.SetECellHeaders('');
+        editor.cellhandles.ShowCellHandles(false);
+      } else {
+        self.trigger('ecell', {
+          ecell: newcell
+        });
+      }
+      newcell = editor.context.cellskip[newcell] || newcell;
+      editor.ecell = SocialCalc.coordToCr(newcell);
+      editor.ecell.coord = newcell;
+      cell = SocialCalc.GetEditorCellElement(editor, editor.ecell.row, editor.ecell.col);
+      highlights[newcell] = 'cursor';
+      for (f in editor.MoveECellCallback) {
+        editor.MoveECellCallback[f](editor);
+      }
+      editor.UpdateCellCSS(cell, editor.ecell.row, editor.ecell.col);
+      editor.SetECellHeaders('selected');
+      for (f in editor.StatusCallback) {
+        editor.StatusCallback[f].func(editor, 'moveecell', newcell, editor.StatusCallback[f].params);
+      }
+      if (editor.busy) {
+        editor.ensureecell = true;
+      } else {
+        editor.ensureecell = false;
+        editor.EnsureECellVisible();
+      }
+      return newcell;
+    };
+  }
+
+  SocialCalcAdapter.prototype.registerCallbacks = function (cb) {
+    this.callbacks = cb;
+  };
+
+  SocialCalcAdapter.prototype.trigger = function (event) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    var action = this.callbacks && this.callbacks[event];
+    if (action) { action.apply(this, args); }
+  };
+
+  SocialCalcAdapter.prototype.applyOperation = function(operation) {
+    if (Array.isArray(operation)) {
+      this.applyOperationToSocialCalc({ type: 'log', data: { log: operation } });
+    } else {
+      this.applyOperationToSocialCalc(operation);
+    }
+  };
+  
+  SocialCalcAdapter.prototype.applyOperationToSocialCalc = function(operation) {
+    var user, ref$, ecell, peerClass, find, cr, cell, origCR, origCell, parts, cmdstr, line, refreshCmd;
+    var SocialCalc = SocialCalc || this.SocialCalc_;
+    var ss = this.ss_, editor = ss.editor, data = operation.data;
+    switch (operation.type) {
+      case 'ecells':
+        for (user in ref$ = data.ecells) {
+          ecell = ref$[user];
+          if (user === this.userId_) {
+            continue;
+          }
+          peerClass = " " + user + " defaultPeer";
+          find = new RegExp(peerClass, 'g');
+          cr = SocialCalc.coordToCr(ecell);
+          cell = SocialCalc.GetEditorCellElement(editor, cr.row, cr.col);
+          if ((cell != null ? cell.element.className.search(find) : void 8) === -1) {
+            cell.element.className += peerClass;
+          }
+        }
+        break;
+      case 'ecell':
+        // TODO: this is the cursor implementation
+        return;
+        peerClass = " " + data.user + " defaultPeer";
+        find = new RegExp(peerClass, 'g');
+        if (data.original) {
+          origCR = SocialCalc.coordToCr(data.original);
+          origCell = SocialCalc.GetEditorCellElement(editor, origCR.row, origCR.col);
+          origCell.element.className = origCell.element.className.replace(find, '');
+          /* TODO: what should we do with that?
+          if (data.original === editor.ecell.coord || data.ecell === editor.ecell.coord) {
+            SocialCalc.Callbacks.broadcast('ecell', {
+              to: data.user,
+              ecell: editor.ecell.coord
+            });
+          }
+          */
+        }
+        cr = SocialCalc.coordToCr(data.ecell);
+        cell = SocialCalc.GetEditorCellElement(editor, cr.row, cr.col);
+        if ((cell != null ? (ref$ = cell.element) != null ? ref$.className.search(find) : void 8 : void 8) === -1) {
+          cell.element.className += peerClass;
+        }
+        break;
+      case 'log':
+/*        if (SocialCalc.hadSnapshot) {
+          break;
+        }
+        SocialCalc.hadSnapshot = true;
+        */
+        if (data.snapshot) {
+          parts = ss.DecodeSpreadsheetSave(data.snapshot);
+        }
+        if (parts && parts != null && parts.sheet) {
+          ss.sheet.ResetSheet();
+          ss.ParseSheetSave(data.snapshot.substring(parts.sheet.start, parts.sheet.end));
+        }
+        cmdstr = (function(){
+          var i$, ref$, len$, results$ = [];
+          for (i$ = 0, len$ = (ref$ = data.log).length; i$ < len$; ++i$) {
+            line = ref$[i$];
+            line = (typeof line == 'string') ? line : line.data.cmdstr;
+            if (!/^re(calc|display)$/.test(line)) {
+              results$.push(line);
+            }
+          }
+          return results$;
+        }.call(this)).join('\n');
+        if (cmdstr.length) {
+          refreshCmd = 'recalc';
+          ss.context.sheetobj.ScheduleSheetCommands(cmdstr + "\n" + refreshCmd + "\n", false, true);
+        } else {
+          ss.context.sheetobj.ScheduleSheetCommands("recalc\n", false, true);
+        }
+        break;
+      case 'recalc':
+        if (data.force) {
+          SocialCalc.Formula.SheetCache.sheets = {};
+          if (ss != null) {
+            ss.sheet.recalconce = true;
+          }
+        }
+        if (data.snapshot) {
+          parts = ss.DecodeSpreadsheetSave(data.snapshot);
+        }
+        if (parts != null && parts.sheet) {
+          SocialCalc.RecalcLoadedSheet(data.room, data.snapshot.substring(parts.sheet.start, parts.sheet.end), true);
+          ss.context.sheetobj.ScheduleSheetCommands("recalc\n", false, true);
+        } else {
+          SocialCalc.RecalcLoadedSheet(data.room, '', true);
+        }
+        break;
+      case 'execute':
+        ss.context.sheetobj.ScheduleSheetCommands(data.cmdstr, data.saveundo, true);
+        /*if (ss.currentTab === ((ref$ = ss.tabnums) != null ? ref$.graph : void 8)) {
+          setTimeout(function(){
+            return window.DoGraph(false, false);
+          }, 100);
+        }*/
+        break;
+    }
+  };
+
+  return SocialCalcAdapter;
+}());
+
+var firecalc = firecalc || { };
+
+firecalc.Firecalc = (function(global) {
+  var FirebaseAdapter = firecalc.FirebaseAdapter;
+  var SocialCalcAdapter = firecalc.SocialCalcAdapter;
+  var EditorClient = firecalc.EditorClient;
+  var utils = firecalc.utils;
+  var SocialCalc = (window && window.SocialCalc) || global.SocialCalc;
+
+  function Firecalc(ref, place, options) {
+    if (!(this instanceof Firecalc)) { return new Firecalc(ref, place, options); }
+
+    if (!SocialCalc) {
+      throw new Error('Couldn\'t find SocialCalc');
+    }
+
+    this.ss_ = new SocialCalc.SpreadsheetControl();
+    if (this.ss_.tabs) {
+      this.ss_.tabnums.graph = this.ss_.tabs.length;
+    }
+    if (typeof this.ss_.InitializeSpreadsheetViewer === 'function') {
+      this.ss_.InitializeSpreadsheetViewer(place, 0, 0, 0);
+    }
+    if (typeof this.ss_.InitializeSpreadsheetControl === 'function') {
+      this.ss_.InitializeSpreadsheetControl(place, 0, 0, 0);
+    }
+    if (typeof this.ss_.ExecuteCommand === 'function') {
+      this.ss_.ExecuteCommand('redisplay', '');
+    }
+    /*if (typeof this.ss_.ExecuteCommand === 'function') {
+      this.ss_.ExecuteCommand('set sheet defaulttextvalueformat text-wiki');
+    }*/
+
+
+    // Provide an easy way to get the firecalc instance associated with this CodeMirror instance.
+    this.ss_.firecalc = this;
+
+    this.options_ = options || { };
+
+    var userId = (options && options.userId) || ref.push().name();
+    var userColor = (options && options.userColor) || colorFromUserId(userId);
+
+    this.firebaseAdapter_ = new FirebaseAdapter(ref, userId, userColor);
+    this.ssAdapter_ = new SocialCalcAdapter(SocialCalc, this.ss_, userId);
+    this.client_ = new EditorClient(this.firebaseAdapter_, this.ssAdapter_);
+
+    var self = this;
+    this.firebaseAdapter_.on('ready', function() {
+      self.ready_ = true;
+      self.trigger('ready');
+    });
+  }
+
+  utils.makeEventEmitter(Firecalc);
+
+  Firecalc.prototype.dispose = function() {
+    this.zombie_ = true; // We've been disposed.  No longer valid to do anything.
+    this.ss_.firecalc = null;
+    this.firebaseAdapter_.dispose();
+  };
+
+  Firecalc.prototype.setUserId = function(userId) {
+    this.firebaseAdapter_.setUserId(userId);
+  };
+
+  Firecalc.prototype.setUserColor = function(color) {
+    this.firebaseAdapter_.setColor(color);
+  };
+
+  Firecalc.prototype.isHistoryEmpty = function() {
+    this.assertReady_('isHistoryEmpty');
+    return this.firebaseAdapter_.isHistoryEmpty();
+  };
+
+  Firecalc.prototype.assertReady_ = function(funcName) {
+    if (!this.ready_) {
+      throw new Error('You must wait for the "ready" event before calling ' + funcName + '.');
+    }
+    if (this.zombie_) {
+      throw new Error('You can\'t use a Firecalc after calling dispose()!');
+    }
+  };
+
+  function colorFromUserId (userId) {
+    var a = 1;
+    for (var i = 0; i < userId.length; i++) {
+      a = 17 * (a+userId.charCodeAt(i)) % 360;
+    }
+    var hue = a/360;
+
+    return hsl2hex(hue, 1, 0.85);
+  }
+
+  function rgb2hex (r, g, b) {
+    function digits (n) {
+      var m = Math.round(255*n).toString(16);
+      return m.length === 1 ? '0'+m : m;
+    }
+    return '#' + digits(r) + digits(g) + digits(b);
+  }
+
+  function hsl2hex (h, s, l) {
+    if (s === 0) { return rgb2hex(l, l, l); }
+    var var2 = l < 0.5 ? l * (1+s) : (l+s) - (s*l);
+    var var1 = 2 * l - var2;
+    var hue2rgb = function (hue) {
+      if (hue < 0) { hue += 1; }
+      if (hue > 1) { hue -= 1; }
+      if (6*hue < 1) { return var1 + (var2-var1)*6*hue; }
+      if (2*hue < 1) { return var2; }
+      if (3*hue < 2) { return var1 + (var2-var1)*6*(2/3 - hue); }
+      return var1;
+    };
+    return rgb2hex(hue2rgb(h+1/3), hue2rgb(h), hue2rgb(h-1/3));
+  }
+
+  return Firecalc;
+})(this);
+return firecalc.Firecalc; })();
