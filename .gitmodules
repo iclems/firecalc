@@ -1,0 +1,3 @@
+[submodule "ethercalc"]
+	path = ethercalc
+	url = git://github.com/audreyt/ethercalc.git
