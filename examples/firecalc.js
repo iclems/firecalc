@@ -945,6 +945,11 @@ firecalc.EditorClient = (function () {
     if (this.mark) { this.mark.clear(); }
   };
 
+  OtherClient.prototype.refreshCursor = function () {
+    if (!this.cursor || !this.cursor.ecell) return;
+    this.updateCursor(new Cursor(this.cursor.ecell));
+  };
+
   function EditorClient (serverAdapter, editorAdapter) {
     Client.call(this);
     this.serverAdapter = serverAdapter;
@@ -958,7 +963,12 @@ firecalc.EditorClient = (function () {
       operation: function (data) {
         self.applyClient(new Operation(data)); 
       },
-      cursorActivity: function (cursor) { self.onCursorActivity(cursor); }
+      cursorActivity: function (cursor) { self.onCursorActivity(cursor); },
+      cursorRefresh: function() {
+        for (var clientId in self.clients) {
+          self.getClientObject(clientId).refreshCursor();
+        }
+      }
     });
 
     this.serverAdapter.registerCallbacks({
@@ -999,8 +1009,8 @@ firecalc.EditorClient = (function () {
     );
   };
 
-  EditorClient.prototype.onChange = function (textOperation, inverse) {
-    this.applyClient(textOperation);
+  EditorClient.prototype.onChange = function (operation, inverse) {
+    this.applyClient(operation);
   };
 
   EditorClient.prototype.onCursorActivity = function (cursor) {
@@ -1059,13 +1069,11 @@ firecalc.SocialCalcAdapter = (function () {
     });
     
     SocialCalc.OrigDoPositionCalculations = SocialCalc.DoPositionCalculations;
-    /*SocialCalc.DoPositionCalculations = function(){
+    SocialCalc.DoPositionCalculations = function(){
       var ref$;
       SocialCalc.OrigDoPositionCalculations.apply(SocialCalc, arguments);
-      if (typeof (ref$ = SocialCalc.Callbacks).broadcast === 'function') {
-        ref$.broadcast('ask.ecell');
-      }
-    };*/
+      self.trigger('cursorRefresh');
+    };
     SocialCalc.hadSnapshot = false;
     SocialCalc.OrigSizeSSDiv = SocialCalc.SizeSSDiv;
     SocialCalc.SizeSSDiv = function(spreadsheet){
