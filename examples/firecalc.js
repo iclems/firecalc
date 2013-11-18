@@ -1375,9 +1375,9 @@ firecalc.Firecalc = (function(global) {
     if (typeof this.ss_.ExecuteCommand === 'function') {
       this.ss_.ExecuteCommand('redisplay', '');
     }
-    /*if (typeof this.ss_.ExecuteCommand === 'function') {
+    if (typeof this.ss_.ExecuteCommand === 'function') {
       this.ss_.ExecuteCommand('set sheet defaulttextvalueformat text-wiki');
-    }*/
+    }
 
 
     // Provide an easy way to get the firecalc instance associated with this CodeMirror instance.
