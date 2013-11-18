@@ -154,16 +154,49 @@ firecalc.utils.log = function() {
 };
 
 var firecalc = firecalc || { };
+firecalc.Cursor = (function () {
+  'use strict';
+
+  // A cursor has a `position` and a `selectionEnd`. Both are zero-based indexes
+  // into the document. When nothing is selected, `selectionEnd` is equal to
+  // `position`. When there is a selection, `position` is always the side of the
+  // selection that would move if you pressed an arrow key.
+  function Cursor (ecell, original) {
+    this.ecell = ecell || null;
+    this.original = original || null;
+  }
+
+  Cursor.fromJSON = function (obj) {
+    return new Cursor(obj.ecell, obj.original);
+  };
+
+  Cursor.prototype.equals = function (other) {
+    return this.ecell === other.ecell &&
+      this.original === other.original;
+  };
+
+  // Return the more current cursor information.
+  Cursor.prototype.compose = function (other) {
+    return other;
+  };
+
+  return Cursor;
+
+}());
+
+
+var firecalc = firecalc || { };
 
 firecalc.Operation = (function () {
   'use strict';
   var utils = firecalc.utils;
+  var OPERATIONS_JOIN_CHAR = '\n';
 
   // Constructor for new operations.
   function Operation (data) {
     if (!this || this.constructor !== Operation) {
       // => function was called without 'new'
-      return new Operation();
+      return new Operation(data);
     }
     
     this.data = data || '';
@@ -174,8 +207,134 @@ firecalc.Operation = (function () {
   };
   
   Operation.prototype.compose = function(other) {
-    var prepend = this.data ? (this.data+'\n') : '';
+    var prepend = this.data ? (this.data + OPERATIONS_JOIN_CHAR) : '';
     return new Operation(prepend+other.data);
+  };
+  
+  Operation.prototype.getDistinctOperations = function() {
+    return this.data.split(OPERATIONS_JOIN_CHAR).map(function(op_data) {
+      return new Operation(op_data);
+    });
+  };
+  
+  // Transform takes two operations A and B that happened concurrently and
+  // produces two operations A' and B' (in an array) such that
+  // `apply(apply(S, A), B') = apply(apply(S, B), A')`. This function is the
+  // heart of OT.
+  // As we can't fully support OT right now, let's take into account the fact
+  // that operation1 is oustanding, operation2 received
+  
+  Operation.  transform = function (operation1, operation2) {
+
+    var operation1prime = new TextOperation();
+    var operation2prime = new TextOperation();
+    var ops1 = operation1.clone().ops, ops2 = operation2.clone().ops;
+    var i1 = 0, i2 = 0;
+    var op1 = ops1[i1++], op2 = ops2[i2++];
+    while (true) {
+      // At every iteration of the loop, the imaginary cursor that both
+      // operation1 and operation2 have that operates on the input string must
+      // have the same position in the input string.
+
+      if (typeof op1 === 'undefined' && typeof op2 === 'undefined') {
+        // end condition: both ops1 and ops2 have been processed
+        break;
+      }
+
+      // next two cases: one or both ops are insert ops
+      // => insert the string in the corresponding prime operation, skip it in
+      // the other one. If both op1 and op2 are insert ops, prefer op1.
+      if (op1 && op1.isInsert()) {
+        operation1prime.insert(op1.text, op1.attributes);
+        operation2prime.retain(op1.text.length);
+        op1 = ops1[i1++];
+        continue;
+      }
+      if (op2 && op2.isInsert()) {
+        operation1prime.retain(op2.text.length);
+        operation2prime.insert(op2.text, op2.attributes);
+        op2 = ops2[i2++];
+        continue;
+      }
+
+      if (typeof op1 === 'undefined') {
+        throw new Error("Cannot transform operations: first operation is too short.");
+      }
+      if (typeof op2 === 'undefined') {
+        throw new Error("Cannot transform operations: first operation is too long.");
+      }
+
+      var minl;
+      if (op1.isRetain() && op2.isRetain()) {
+        // Simple case: retain/retain
+        var attributesPrime = TextOperation.transformAttributes(op1.attributes, op2.attributes);
+        if (op1.chars > op2.chars) {
+          minl = op2.chars;
+          op1.chars -= op2.chars;
+          op2 = ops2[i2++];
+        } else if (op1.chars === op2.chars) {
+          minl = op2.chars;
+          op1 = ops1[i1++];
+          op2 = ops2[i2++];
+        } else {
+          minl = op1.chars;
+          op2.chars -= op1.chars;
+          op1 = ops1[i1++];
+        }
+
+        operation1prime.retain(minl, attributesPrime[0]);
+        operation2prime.retain(minl, attributesPrime[1]);
+      } else if (op1.isDelete() && op2.isDelete()) {
+        // Both operations delete the same string at the same position. We don't
+        // need to produce any operations, we just skip over the delete ops and
+        // handle the case that one operation deletes more than the other.
+        if (op1.chars > op2.chars) {
+          op1.chars -= op2.chars;
+          op2 = ops2[i2++];
+        } else if (op1.chars === op2.chars) {
+          op1 = ops1[i1++];
+          op2 = ops2[i2++];
+        } else {
+          op2.chars -= op1.chars;
+          op1 = ops1[i1++];
+        }
+      // next two cases: delete/retain and retain/delete
+      } else if (op1.isDelete() && op2.isRetain()) {
+        if (op1.chars > op2.chars) {
+          minl = op2.chars;
+          op1.chars -= op2.chars;
+          op2 = ops2[i2++];
+        } else if (op1.chars === op2.chars) {
+          minl = op2.chars;
+          op1 = ops1[i1++];
+          op2 = ops2[i2++];
+        } else {
+          minl = op1.chars;
+          op2.chars -= op1.chars;
+          op1 = ops1[i1++];
+        }
+        operation1prime['delete'](minl);
+      } else if (op1.isRetain() && op2.isDelete()) {
+        if (op1.chars > op2.chars) {
+          minl = op2.chars;
+          op1.chars -= op2.chars;
+          op2 = ops2[i2++];
+        } else if (op1.chars === op2.chars) {
+          minl = op1.chars;
+          op1 = ops1[i1++];
+          op2 = ops2[i2++];
+        } else {
+          minl = op1.chars;
+          op2.chars -= op1.chars;
+          op1 = ops1[i1++];
+        }
+        operation2prime['delete'](minl);
+      } else {
+        throw new Error("The two operations aren't compatible");
+      }
+    }
+
+    return [operation1prime, operation2prime];
   };
   
   // Converts operation into a JSON value.
@@ -197,8 +356,8 @@ firecalc.FirebaseAdapter = (function (global) {
   var Operation = firecalc.Operation;
   var utils = firecalc.utils;
 
-  // Save a checkpoint every 100 edits.
-  var CHECKPOINT_FREQUENCY = 5;
+  // Save a checkpoint every X edits.
+  var CHECKPOINT_FREQUENCY = 30;
 
   function FirebaseAdapter (ref, userId, userColor) {
     this.ref_ = ref;
@@ -759,14 +918,31 @@ firecalc.EditorClient = (function () {
 
   var Client = firecalc.Client;
   var Operation = firecalc.Operation;
+  var Cursor = firecalc.Cursor;
 
   function OtherClient (id, editorAdapter) {
     this.id = id;
     this.editorAdapter = editorAdapter;
+
+    this.li = document.createElement('li');
   }
 
   OtherClient.prototype.setColor = function (color) {
     this.color = color;
+  };
+
+  OtherClient.prototype.updateCursor = function (cursor) {
+    this.removeCursor();
+    this.cursor = cursor;
+    this.mark = this.editorAdapter.setOtherCursor(
+      cursor,
+      this.color,
+      this.id
+    );
+  };
+
+  OtherClient.prototype.removeCursor = function () {
+    if (this.mark) { this.mark.clear(); }
   };
 
   function EditorClient (serverAdapter, editorAdapter) {
@@ -782,10 +958,7 @@ firecalc.EditorClient = (function () {
       operation: function (data) {
         self.applyClient(new Operation(data)); 
       },
-      ecell: function (data) { 
-        // TODO: this is the local cursor move
-        return;
-      }
+      cursorActivity: function (cursor) { self.onCursorActivity(cursor); }
     });
 
     this.serverAdapter.registerCallbacks({
@@ -800,6 +973,16 @@ firecalc.EditorClient = (function () {
           a(snapshot);
         } else if (typeof a == 'string') {
           self.editorAdapter.loadSnapshot(a);
+        }
+      },
+      cursor: function (clientId, cursor, color) {
+        if (self.serverAdapter.userId_ === clientId) return;
+        var client = self.getClientObject(clientId);
+        if (cursor) {
+          client.setColor(color);
+          client.updateCursor(Cursor.fromJSON(cursor));
+        } else {
+          client.removeCursor();
         }
       }
     });
@@ -818,6 +1001,18 @@ firecalc.EditorClient = (function () {
 
   EditorClient.prototype.onChange = function (textOperation, inverse) {
     this.applyClient(textOperation);
+  };
+
+  EditorClient.prototype.onCursorActivity = function (cursor) {
+    var oldCursor = this.cursor;
+    this.cursor = cursor;
+    if (oldCursor && this.cursor.equals(oldCursor)) { return; }
+    this.sendCursor(this.cursor);
+  };
+
+  EditorClient.prototype.sendCursor = function (cursor) {
+    if (this.state instanceof Client.AwaitingWithBuffer) { return; }
+    this.serverAdapter.sendCursor(cursor);
   };
 
   EditorClient.prototype.sendOperation = function (operation) {
@@ -847,6 +1042,10 @@ firecalc.SocialCalcAdapter = (function () {
   'use strict';
   
   var Operation = firecalc.Operation;
+  var Cursor = firecalc.Cursor;
+  
+  var CursorStyleProperties = ['box-shadow','-webkit-box-shadow','-moz-box-shadow'];
+  var CursorStyleInset = 2;
 
   function SocialCalcAdapter(SocialCalc, Spreadsheet, userId) {
     
@@ -897,10 +1096,7 @@ firecalc.SocialCalcAdapter = (function () {
         if (editor.ecell.coord === newcell) {
           return newcell;
         }
-        self.trigger('ecell', {
-          original: editor.ecell.coord,
-          ecell: newcell
-        });
+        self.trigger('cursorActivity', new Cursor(newcell, editor.ecell.coord));
         cell = SocialCalc.GetEditorCellElement(editor, editor.ecell.row, editor.ecell.col);
         delete highlights[editor.ecell.coord];
         if (editor.range2.hasrange && editor.ecell.row >= editor.range2.top && editor.ecell.row <= editor.range2.bottom && editor.ecell.col >= editor.range2.left && editor.ecell.col <= editor.range2.right) {
@@ -910,9 +1106,7 @@ firecalc.SocialCalcAdapter = (function () {
         editor.SetECellHeaders('');
         editor.cellhandles.ShowCellHandles(false);
       } else {
-        self.trigger('ecell', {
-          ecell: newcell
-        });
+        self.trigger('cursorActivity', new Cursor(newcell));
       }
       newcell = editor.context.cellskip[newcell] || newcell;
       editor.ecell = SocialCalc.coordToCr(newcell);
@@ -961,7 +1155,6 @@ firecalc.SocialCalcAdapter = (function () {
 
   SocialCalcAdapter.prototype.applyOperation = function(operation) {
     var operations = Array.isArray(operation) ? operation : [operation];
-    debugger;
     this.executeOperations(operations);
   };
   
@@ -988,6 +1181,66 @@ firecalc.SocialCalcAdapter = (function () {
     }
   };
   
+  SocialCalcAdapter.prototype.updateCellElementStyleWithUsers = function(el, users) {
+    if (!el || !users) return;
+    var styles = [], i = 1;
+    for (var userId in users) {
+      var color = users[userId];
+      styles.push('inset 0 0 0 ' + CursorStyleInset*i + 'px ' + color);
+      i++;
+    }
+    var style = styles.join(',');
+    for (var i = 0; i < CursorStyleProperties.length; i++) {
+      var styleProperty = CursorStyleProperties[i];
+      el.style[styleProperty] = style;
+    }
+    var hasUsers = users.length > 0;
+    var hasClassUsers = el.className.search(new RegExp('defaultPeer', 'g'));
+    if (hasUsers && !hasClassUsers) {
+      el.className += ' defaultPeer';
+    } else if (!hasUsers && hasClassUsers) {
+      el.className = el.className.replace('defaultPeer', '');
+    }
+  };
+    
+  SocialCalcAdapter.prototype.addCursorToCellWithColor = function(cell, color, clientId) {
+    if (!cell || !cell.element) return;
+    var el = cell.element;
+    el.users = el.users || {};
+    if (el.users[clientId]) return;
+    el.users[clientId] = color;
+    this.updateCellElementStyleWithUsers(el, el.users);
+  };
+
+  SocialCalcAdapter.prototype.removeCursorFromCellWithColor = function(cell, color, clientId) {
+    if (!cell || !cell.element) return;
+    var el = cell.element;
+    el.users = el.users || {};
+    if (el.users[clientId]) {
+      delete el.users[clientId];
+      this.updateCellElementStyleWithUsers(el, el.users);
+    }
+  };
+  
+  SocialCalcAdapter.prototype.setOtherCursor = function (cursor, color, clientId) {
+    var editor = this.ss_.editor;
+    var peerClass = clientId;
+    var find = new RegExp(peerClass, 'g');
+    var origCR, origCell, cr, cell, ref$;
+    if (cursor.original) {
+      origCR = SocialCalc.coordToCr(cursor.original);
+      origCell = SocialCalc.GetEditorCellElement(editor, origCR.row, origCR.col);
+      this.removeCursorFromCellWithColor(origCell, color, clientId);
+      if (cursor.original === editor.ecell.coord || cursor.ecell === editor.ecell.coord) {
+        this.trigger('cursorActivity', new Cursor(editor.ecell.coord));
+      }
+    }
+    cr = SocialCalc.coordToCr(cursor.ecell);
+    cell = SocialCalc.GetEditorCellElement(editor, cr.row, cr.col);
+    this.addCursorToCellWithColor(cell, color, clientId);
+  };
+  
+  /*
   SocialCalcAdapter.prototype.applyOperationToSocialCalc = function(operation) {
     var user, ref$, ecell, peerClass, find, cr, cell, origCR, origCell, parts, cmdstr, line, refreshCmd;
     var SocialCalc = SocialCalc || this.SocialCalc_;
@@ -1017,14 +1270,12 @@ firecalc.SocialCalcAdapter = (function () {
           origCR = SocialCalc.coordToCr(data.original);
           origCell = SocialCalc.GetEditorCellElement(editor, origCR.row, origCR.col);
           origCell.element.className = origCell.element.className.replace(find, '');
-          /* TODO: what should we do with that?
           if (data.original === editor.ecell.coord || data.ecell === editor.ecell.coord) {
             SocialCalc.Callbacks.broadcast('ecell', {
               to: data.user,
               ecell: editor.ecell.coord
             });
           }
-          */
         }
         cr = SocialCalc.coordToCr(data.ecell);
         cell = SocialCalc.GetEditorCellElement(editor, cr.row, cr.col);
@@ -1074,14 +1325,14 @@ firecalc.SocialCalcAdapter = (function () {
         break;
       case 'execute':
         ss.context.sheetobj.ScheduleSheetCommands(data, true, true);
-        /*if (ss.currentTab === ((ref$ = ss.tabnums) != null ? ref$.graph : void 8)) {
+        if (ss.currentTab === ((ref$ = ss.tabnums) != null ? ref$.graph : void 8)) {
           setTimeout(function(){
             return window.DoGraph(false, false);
           }, 100);
-        }*/
+        }
         break;
     }
-  };
+  };*/
 
   return SocialCalcAdapter;
 }());

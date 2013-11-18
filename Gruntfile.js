@@ -16,6 +16,7 @@ module.exports = function (grunt) {
         },
         "src": [
           "lib/utils.js",
+          "lib/cursor.js",
           "lib/operation.js",
           "lib/firebase-adapter.js",
           "lib/client.js",
