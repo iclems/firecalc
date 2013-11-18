@@ -1212,7 +1212,7 @@ firecalc.SocialCalcAdapter = (function () {
     this.updateCellElementStyleWithUsers(el, el.users);
   };
 
-  SocialCalcAdapter.prototype.removeCursorFromCellWithColor = function(cell, color, clientId) {
+  SocialCalcAdapter.prototype.removeCursorFromCellWithColor = function(cell, clientId) {
     if (!cell || !cell.element) return;
     var el = cell.element;
     el.users = el.users || {};
@@ -1230,7 +1230,7 @@ firecalc.SocialCalcAdapter = (function () {
     if (cursor.original) {
       origCR = SocialCalc.coordToCr(cursor.original);
       origCell = SocialCalc.GetEditorCellElement(editor, origCR.row, origCR.col);
-      this.removeCursorFromCellWithColor(origCell, color, clientId);
+      this.removeCursorFromCellWithColor(origCell, clientId);
       if (cursor.original === editor.ecell.coord || cursor.ecell === editor.ecell.coord) {
         this.trigger('cursorActivity', new Cursor(editor.ecell.coord));
       }
@@ -1238,6 +1238,7 @@ firecalc.SocialCalcAdapter = (function () {
     cr = SocialCalc.coordToCr(cursor.ecell);
     cell = SocialCalc.GetEditorCellElement(editor, cr.row, cr.col);
     this.addCursorToCellWithColor(cell, color, clientId);
+    return { clear: this.removeCursorFromCellWithColor.bind(this, cell, clientId) };
   };
   
   /*
