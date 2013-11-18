@@ -224,7 +224,10 @@ firecalc.Operation = (function () {
   // As we can't fully support OT right now, let's take into account the fact
   // that operation1 is oustanding, operation2 received
   
-  Operation.  transform = function (operation1, operation2) {
+  Operation.transform = function (operation1, operation2) {
+
+    // TODO: this is completely wrong...
+    return [operation1, operation2];
 
     var operation1prime = new TextOperation();
     var operation2prime = new TextOperation();
