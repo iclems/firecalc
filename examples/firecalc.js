@@ -225,16 +225,9 @@ firecalc.Operation = (function () {
   // that operation1 is oustanding, operation2 received
   
   Operation.transform = function (operation1, operation2) {
-<<<<<<< HEAD
-
-    // TODO: this is completely wrong...
-    return [operation1, operation2];
-
-=======
     // TODO: handle this, it's totally wrong to just ignore it...
     return [operation1, operation2];
 /*
->>>>>>> master
     var operation1prime = new TextOperation();
     var operation2prime = new TextOperation();
     var ops1 = operation1.clone().ops, ops2 = operation2.clone().ops;
