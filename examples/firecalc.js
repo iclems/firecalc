@@ -1054,7 +1054,7 @@ firecalc.SocialCalcAdapter = (function () {
   var Operation = firecalc.Operation;
   var Cursor = firecalc.Cursor;
   
-  var CursorStyleProperties = ['box-shadow','-webkit-box-shadow','-moz-box-shadow'];
+  var CursorStyleProperties = ['boxShadow','-webkit-box-shadow','MozBoxShadow'];
   var CursorStyleInset = 2;
 
   function SocialCalcAdapter(SocialCalc, Spreadsheet, userId) {

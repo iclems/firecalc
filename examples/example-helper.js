@@ -1,7 +1,7 @@
 function getExampleRef() {
   // Get hash from end of URL or generate a random one.
 
-  var ref = new Firebase('https://firepad.firebaseio-demo.com');
+  var ref = new Firebase('https://firecalc.firebaseio-demo.com');
   var hash = window.location.hash.replace(/#/g, '');
   if (hash) {
     ref = ref.child(hash);
